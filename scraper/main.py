@@ -26,8 +26,8 @@ def build_parser() -> argparse.ArgumentParser:
     retry_parser.add_argument("--delay", type=float, default=1.5)
 
     scrape_parser = subparsers.add_parser("scrape", help="Спарсить рецепты по ID")
-    scrape_parser.add_argument("--delay", type=float, default=1.0)
-    scrape_parser.add_argument("--workers", type=int, default=2)
+    scrape_parser.add_argument("--delay", type=float, default=2.0)
+    scrape_parser.add_argument("--workers", type=int, default=1)
     scrape_parser.add_argument("--limit", type=int, default=None)
 
     all_parser = subparsers.add_parser("all", help="Полный цикл: категории → ID → рецепты")
@@ -51,6 +51,7 @@ def main() -> None:
     progress_path = DATA_DIR / "progress.json"
 
     client = RussianFoodClient(delay=args.delay)
+    client.warmup()
 
     if args.command == "categories":
         categories = collect_categories(client, categories_path)

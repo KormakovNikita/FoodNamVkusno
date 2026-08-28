@@ -17,15 +17,23 @@ from scraper.parser import (
 
 
 def _scrape_one(client: RussianFoodClient, recipe_id: int) -> dict | None:
+    url = f"https://www.russianfood.com/recipes/recipe.php?rid={recipe_id}"
     try:
-        html = client.get_print_page(recipe_id)
-        recipe = parse_recipe(html, recipe_id, source="print")
-        if recipe is None:
-            html = client.get_recipe_page(recipe_id)
-            recipe = parse_recipe(html, recipe_id, source="page")
-        return recipe.to_dict() if recipe else None
+        try:
+            html = client.get_print_page(recipe_id)
+            recipe = parse_recipe(html, recipe_id, source="print")
+            if recipe and recipe.ingredients:
+                return recipe.to_dict()
+        except Exception:
+            pass
+
+        html = client.get_recipe_page(recipe_id)
+        recipe = parse_recipe(html, recipe_id, source="page")
+        if recipe:
+            return recipe.to_dict()
+        return {"id": recipe_id, "error": "empty recipe page", "url": url}
     except Exception as error:
-        return {"id": recipe_id, "error": str(error), "url": f"https://www.russianfood.com/recipes/recipe.php?rid={recipe_id}"}
+        return {"id": recipe_id, "error": str(error), "url": url}
 
 
 def scrape_recipes(
