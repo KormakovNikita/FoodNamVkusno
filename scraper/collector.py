@@ -77,6 +77,8 @@ def collect_recipe_ids(
             all_ids.update(recipe_ids)
             for preview in previews:
                 all_previews[preview["id"]] = preview
+            save_json(ids_path, sorted(all_ids))
+            save_json(previews_path, list(all_previews.values()))
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {
