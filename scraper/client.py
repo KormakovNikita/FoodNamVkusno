@@ -39,8 +39,13 @@ class RussianFoodClient:
     def warmup(self) -> None:
         if self._warmed_up:
             return
-        self.get("/recipes/")
-        self._warmed_up = True
+        for _ in range(3):
+            try:
+                self.get("/recipes/")
+                self._warmed_up = True
+                return
+            except Exception:
+                time.sleep(5)
 
     @staticmethod
     def _looks_blocked(html: str) -> bool:
