@@ -343,5 +343,8 @@ def load_scraped_ids(path: Path) -> set[int]:
             line = line.strip()
             if not line:
                 continue
-            scraped.add(json.loads(line)["id"])
+            record = json.loads(line)
+            if record.get("error"):
+                continue
+            scraped.add(record["id"])
     return scraped
