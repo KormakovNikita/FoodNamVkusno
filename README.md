@@ -30,9 +30,27 @@ python -m scraper.main all --delay 1.5
 
 # Или по шагам
 python -m scraper.main categories
-python -m scraper.main ids --delay 1.5
+python -m scraper.main ids --delay 2.0 --timeout 90 --mode fresh
 python -m scraper.main scrape --delay 1.5
 ```
+
+## Сбор ID (важно)
+
+**Не используйте `--mode categories` по умолчанию** — категория «Супы» содержит 1200+ страниц и часто даёт таймауты.
+
+Рекомендуется общий каталог:
+
+```bash
+python -m scraper.main ids --delay 2.0 --timeout 90 --mode fresh
+```
+
+Тест:
+
+```bash
+python -m scraper.main ids --delay 2.0 --max-pages 10
+```
+
+После прерывания — запустите ту же команду снова (продолжит с сохранённой страницы).
 
 ## Порционный режим (рекомендуется)
 

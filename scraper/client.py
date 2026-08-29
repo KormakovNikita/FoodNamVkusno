@@ -24,8 +24,8 @@ class PovarenokClient:
     def __init__(
         self,
         delay: float = 1.5,
-        timeout: float = 30.0,
-        max_retries: int = 4,
+        timeout: float = 90.0,
+        max_retries: int = 6,
         cooldown_after: int = 8,
         cooldown_seconds: float = 120.0,
     ) -> None:
@@ -59,7 +59,7 @@ class PovarenokClient:
                 self._warmed_up = True
                 return
             except Exception:
-                time.sleep(5)
+                time.sleep(10)
 
     def _register_error(self) -> None:
         self.consecutive_errors += 1
@@ -74,34 +74,51 @@ class PovarenokClient:
         self.consecutive_errors = 0
 
     def _throttle(self) -> None:
-        wait_for = self.delay + random.uniform(0.3, 1.2)
+        wait_for = self.delay + random.uniform(0.3, 1.0)
         with self._lock:
             elapsed = time.monotonic() - self._last_request_at
             if elapsed < wait_for:
                 time.sleep(wait_for - elapsed)
             self._last_request_at = time.monotonic()
 
+    @staticmethod
+    def _is_timeout_error(error: Exception) -> bool:
+        message = str(error).lower()
+        return "timed out" in message or "timeout" in message or "curl: (28)" in message
+
     def get(self, path: str, params: Optional[dict] = None, referer: Optional[str] = None) -> str:
         url = path if path.startswith("http") else f"{BASE_URL}{path}"
         headers = {"Referer": referer or f"{BASE_URL}/recipes/"}
-        last_response = None
+        last_error: Exception | None = None
 
         for attempt in range(self.max_retries):
-            self._throttle()
-            response = self.session.get(url, params=params, headers=headers, timeout=self.timeout)
-            last_response = response
-            if response.status_code in (403, 429):
+            try:
+                self._throttle()
+                response = self.session.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+                if response.status_code in (403, 429):
+                    self._register_error()
+                    time.sleep(min(90, 15 * (attempt + 1)))
+                    continue
+                response.raise_for_status()
+                response.encoding = ENCODING
+                self._register_success()
+                return response.text
+            except Exception as error:
+                last_error = error
                 self._register_error()
-                time.sleep(min(60, 10 * (attempt + 1)))
-                continue
-            response.raise_for_status()
-            response.encoding = ENCODING
-            self._register_success()
-            return response.text
+                wait = min(90, 10 * (attempt + 1))
+                if self._is_timeout_error(error):
+                    wait = min(120, 20 * (attempt + 1))
+                time.sleep(wait)
 
-        if last_response is not None:
-            last_response.raise_for_status()
-        raise http.HTTPError(f"Failed to fetch {url}")
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"Failed to fetch {url}")
 
     def get_recipe_page(self, recipe_id: int) -> str:
         return self.get(f"/recipes/show/{recipe_id}/", referer=f"{BASE_URL}/recipes/")
