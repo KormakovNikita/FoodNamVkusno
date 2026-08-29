@@ -13,7 +13,10 @@ def export_jsonl_to_json(jsonl_path: Path, json_path: Path) -> int:
             line = line.strip()
             if not line:
                 continue
-            records.append(json.loads(line))
+            record = json.loads(line)
+            if record.get("error"):
+                continue
+            records.append(record)
     with json_path.open("w", encoding="utf-8") as file:
         json.dump(records, file, ensure_ascii=False, indent=2)
     return len(records)

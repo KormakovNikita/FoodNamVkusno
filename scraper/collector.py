@@ -1,114 +1,81 @@
 from __future__ import annotations
 
-import json
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
 
-from scraper.client import RussianFoodClient
+from scraper.client import PovarenokClient
 from scraper.parser import (
     load_json,
-    parse_category_links,
-    parse_category_preview,
-    parse_category_recipe_ids,
+    parse_categories,
+    parse_category_previews,
     parse_max_page,
+    parse_recipe_ids_from_html,
     save_json,
 )
 
 
-def _collect_ids_for_category(client: RussianFoodClient, fid: int) -> tuple[set[int], list[dict], str | None]:
+def collect_categories(client: PovarenokClient, output_path: Path) -> list[dict]:
+    html = client.get_catalog_page()
+    categories = parse_categories(html)
+    save_json(output_path, categories)
+    return categories
+
+
+def _collect_ids_for_category(client: PovarenokClient, category_id: int) -> tuple[set[int], list[dict], str | None]:
     try:
-        first_page = client.get_category_page(fid, page=1)
-        recipe_ids = parse_category_recipe_ids(first_page)
-        previews = parse_category_preview(first_page, fid)
+        first_page = client.get_category_page(category_id, page=1)
+        recipe_ids = parse_recipe_ids_from_html(first_page)
+        previews = parse_category_previews(first_page, category_id)
         max_page = parse_max_page(first_page)
 
         for page in range(2, max_page + 1):
-            html = client.get_category_page(fid, page=page)
-            recipe_ids.update(parse_category_recipe_ids(html))
-            previews.extend(parse_category_preview(html, fid))
+            html = client.get_category_page(category_id, page=page)
+            page_ids = parse_recipe_ids_from_html(html)
+            if not page_ids:
+                break
+            recipe_ids.update(page_ids)
+            previews.extend(parse_category_previews(html, category_id))
 
         return recipe_ids, previews, None
     except Exception as error:
         return set(), [], str(error)
 
 
-def collect_categories(client: RussianFoodClient, output_path: Path) -> list[dict]:
-    html = client.get("/recipes/")
-    categories = parse_category_links(html)
-    records = [
-        {
-            "id": fid,
-            "name": name,
-            "url": f"https://www.russianfood.com/recipes/bytype/?fid={fid}",
-        }
-        for fid, name in categories
-    ]
-    save_json(output_path, records)
-    return records
-
-
 def collect_recipe_ids(
-    client: RussianFoodClient,
+    client: PovarenokClient,
     categories_path: Path,
     ids_path: Path,
     previews_path: Path,
     failed_path: Path,
-    workers: int = 1,
 ) -> dict:
     categories = load_json(categories_path, [])
-    existing_ids = set(load_json(ids_path, [])) if ids_path.exists() else set()
-    existing_previews = {item["id"]: item for item in load_json(previews_path, [])}
-    failed_categories = load_json(failed_path, [])
+    all_ids = set(load_json(ids_path, [])) if ids_path.exists() else set()
+    all_previews = {item["id"]: item for item in load_json(previews_path, [])}
+    failures: list[dict] = []
 
-    all_ids = set(existing_ids)
-    all_previews = dict(existing_previews)
-    new_failures: list[dict] = []
+    for category in tqdm(categories, desc="Категории"):
+        recipe_ids, previews, error = _collect_ids_for_category(client, category["id"])
+        if error:
+            failures.append({"id": category["id"], "name": category["name"], "error": error})
+            tqdm.write(f"Ошибка категории {category['id']}: {error}")
+            continue
+        all_ids.update(recipe_ids)
+        for preview in previews:
+            all_previews[preview["id"]] = preview
+        save_json(ids_path, sorted(all_ids))
+        save_json(previews_path, list(all_previews.values()))
 
-    if workers <= 1:
-        iterator = tqdm(categories, desc="Категории")
-        for category in iterator:
-            recipe_ids, previews, error = _collect_ids_for_category(client, category["id"])
-            if error:
-                new_failures.append({"id": category["id"], "name": category["name"], "error": error})
-                tqdm.write(f"Ошибка категории {category['id']}: {error}")
-                continue
-            all_ids.update(recipe_ids)
-            for preview in previews:
-                all_previews[preview["id"]] = preview
-            save_json(ids_path, sorted(all_ids))
-            save_json(previews_path, list(all_previews.values()))
-    else:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = {
-                executor.submit(_collect_ids_for_category, client, category["id"]): category
-                for category in categories
-            }
-            for future in tqdm(as_completed(futures), total=len(futures), desc="Категории"):
-                category = futures[future]
-                recipe_ids, previews, error = future.result()
-                if error:
-                    new_failures.append({"id": category["id"], "name": category["name"], "error": error})
-                    tqdm.write(f"Ошибка категории {category['id']}: {error}")
-                    continue
-                all_ids.update(recipe_ids)
-                for preview in previews:
-                    all_previews[preview["id"]] = preview
-
-    sorted_ids = sorted(all_ids)
-    save_json(ids_path, sorted_ids)
-    save_json(previews_path, list(all_previews.values()))
-    save_json(failed_path, new_failures)
+    save_json(failed_path, failures)
     return {
-        "recipe_count": len(sorted_ids),
+        "recipe_count": len(all_ids),
         "preview_count": len(all_previews),
-        "failed_categories": len(new_failures),
+        "failed_categories": len(failures),
     }
 
 
 def retry_failed_categories(
-    client: RussianFoodClient,
+    client: PovarenokClient,
     categories_path: Path,
     ids_path: Path,
     previews_path: Path,
@@ -117,7 +84,7 @@ def retry_failed_categories(
     categories = {item["id"]: item for item in load_json(categories_path, [])}
     failed = load_json(failed_path, [])
     if not failed:
-        return {"retried": 0, "still_failed": 0}
+        return {"retried": 0, "still_failed": 0, "recipe_count": len(load_json(ids_path, []))}
 
     all_ids = set(load_json(ids_path, []))
     all_previews = {item["id"]: item for item in load_json(previews_path, [])}
