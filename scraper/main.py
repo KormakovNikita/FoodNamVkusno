@@ -4,9 +4,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from scraper.client import RussianFoodClient
+from scraper.client import RussianFoodClient, USE_CURL_CFFI
 from scraper.collector import collect_categories, collect_recipe_ids, retry_failed_categories
-from scraper.scraper import scrape_recipes
+from scraper.scraper import retry_failed_recipes, scrape_recipes
+from scraper.status import show_status
 
 DATA_DIR = Path("data")
 
@@ -15,27 +16,33 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Парсер рецептов russianfood.com")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    categories_parser = subparsers.add_parser("categories", help="Собрать категории")
-    categories_parser.add_argument("--delay", type=float, default=0.35)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--delay", type=float, default=5.0, help="Пауза между запросами (сек)")
+    common.add_argument("--cooldown", type=float, default=300.0, help="Пауза после серии 403 (сек)")
 
-    ids_parser = subparsers.add_parser("ids", help="Собрать ID рецептов из категорий")
-    ids_parser.add_argument("--delay", type=float, default=1.0)
-    ids_parser.add_argument("--workers", type=int, default=1)
+    subparsers.add_parser("categories", parents=[common], help="Собрать категории")
+    subparsers.add_parser("ids", parents=[common], help="Собрать ID рецептов")
+    subparsers.add_parser("retry", parents=[common], help="Повторить категории с ошибками")
 
-    retry_parser = subparsers.add_parser("retry", help="Повторить сбор для категорий с ошибками")
-    retry_parser.add_argument("--delay", type=float, default=1.5)
+    scrape_parser = subparsers.add_parser("scrape", parents=[common], help="Скачать рецепты")
+    scrape_parser.add_argument("--limit", type=int, default=None, help="Сколько рецептов скачать")
 
-    scrape_parser = subparsers.add_parser("scrape", help="Спарсить рецепты по ID")
-    scrape_parser.add_argument("--delay", type=float, default=2.0)
-    scrape_parser.add_argument("--workers", type=int, default=1)
-    scrape_parser.add_argument("--limit", type=int, default=None)
+    retry_recipes = subparsers.add_parser("retry-recipes", parents=[common], help="Повторить рецепты с ошибками")
+    retry_recipes.add_argument("--limit", type=int, default=None)
 
-    all_parser = subparsers.add_parser("all", help="Полный цикл: категории → ID → рецепты")
-    all_parser.add_argument("--delay", type=float, default=1.0)
-    all_parser.add_argument("--workers", type=int, default=2)
+    all_parser = subparsers.add_parser("all", parents=[common], help="Полный цикл")
     all_parser.add_argument("--limit", type=int, default=None)
 
+    subparsers.add_parser("status", help="Показать прогресс")
+
     return parser
+
+
+def make_client(args: argparse.Namespace) -> RussianFoodClient:
+    client = RussianFoodClient(delay=args.delay, cooldown_seconds=args.cooldown)
+    print(f"HTTP backend: {client.backend}" + ("" if USE_CURL_CFFI else " (установите curl_cffi для обхода 403)"))
+    client.warmup()
+    return client
 
 
 def main() -> None:
@@ -46,12 +53,16 @@ def main() -> None:
     categories_path = DATA_DIR / "categories.json"
     ids_path = DATA_DIR / "recipe_ids.json"
     previews_path = DATA_DIR / "recipe_previews.json"
-    failed_path = DATA_DIR / "failed_categories.json"
+    failed_categories_path = DATA_DIR / "failed_categories.json"
     recipes_path = DATA_DIR / "recipes.jsonl"
+    failed_recipes_path = DATA_DIR / "failed_recipes.jsonl"
     progress_path = DATA_DIR / "progress.json"
 
-    client = RussianFoodClient(delay=args.delay)
-    client.warmup()
+    if args.command == "status":
+        show_status(DATA_DIR)
+        return
+
+    client = make_client(args)
 
     if args.command == "categories":
         categories = collect_categories(client, categories_path)
@@ -62,34 +73,43 @@ def main() -> None:
         if not categories_path.exists():
             collect_categories(client, categories_path)
         stats = collect_recipe_ids(
-            client, categories_path, ids_path, previews_path, failed_path, workers=args.workers
+            client,
+            categories_path,
+            ids_path,
+            previews_path,
+            failed_categories_path,
+            workers=1,
         )
         print(stats)
         return
 
     if args.command == "retry":
-        stats = retry_failed_categories(client, categories_path, ids_path, previews_path, failed_path)
+        stats = retry_failed_categories(
+            client, categories_path, ids_path, previews_path, failed_categories_path
+        )
         print(stats)
         return
 
     if args.command == "scrape":
         if not ids_path.exists():
-            if not categories_path.exists():
-                collect_categories(client, categories_path)
-            collect_recipe_ids(
-                client,
-                categories_path,
-                ids_path,
-                previews_path,
-                failed_path,
-                workers=min(args.workers, 2),
-            )
+            raise SystemExit("Сначала соберите ID: python -m scraper.main ids")
         stats = scrape_recipes(
             client,
             ids_path,
             recipes_path,
+            failed_recipes_path,
             progress_path,
-            workers=args.workers,
+            limit=args.limit,
+        )
+        print(stats)
+        return
+
+    if args.command == "retry-recipes":
+        stats = retry_failed_recipes(
+            client,
+            failed_recipes_path,
+            recipes_path,
+            progress_path,
             limit=args.limit,
         )
         print(stats)
@@ -99,15 +119,20 @@ def main() -> None:
         categories = collect_categories(client, categories_path)
         print(f"Категорий: {len(categories)}")
         stats_ids = collect_recipe_ids(
-            client, categories_path, ids_path, previews_path, failed_path, workers=min(args.workers, 2)
+            client,
+            categories_path,
+            ids_path,
+            previews_path,
+            failed_categories_path,
+            workers=1,
         )
         print(stats_ids)
         stats_scrape = scrape_recipes(
             client,
             ids_path,
             recipes_path,
+            failed_recipes_path,
             progress_path,
-            workers=args.workers,
             limit=args.limit,
         )
         print(stats_scrape)
