@@ -123,13 +123,46 @@ class PovarenokClient:
     def get_recipe_page(self, recipe_id: int) -> str:
         return self.get(f"/recipes/show/{recipe_id}/", referer=f"{BASE_URL}/recipes/")
 
+    def check_recipe_exists(self, recipe_id: int) -> bool:
+        url = f"{BASE_URL}/recipes/show/{recipe_id}/"
+        headers = {"Referer": f"{BASE_URL}/recipes/"}
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                self._throttle()
+                response = self.session.get(url, headers=headers, timeout=self.timeout)
+                if response.status_code == 404:
+                    self._register_success()
+                    return False
+                if response.status_code in (403, 429):
+                    self._register_error()
+                    time.sleep(min(90, 15 * (attempt + 1)))
+                    continue
+                response.raise_for_status()
+                response.encoding = ENCODING
+                self._register_success()
+                return "schema.org/Recipe" in response.text
+            except Exception as error:
+                last_error = error
+                self._register_error()
+                wait = min(90, 10 * (attempt + 1))
+                if self._is_timeout_error(error):
+                    wait = min(120, 20 * (attempt + 1))
+                time.sleep(wait)
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(f"Failed to check recipe {recipe_id}")
+
     def get_category_page(self, category_id: int, page: int = 1) -> str:
         if page <= 1:
             path = f"/recipes/category/{category_id}/"
             referer = f"{BASE_URL}/recipes/cat/"
         else:
-            path = f"/recipes/category/{category_id}/{page}/"
-            referer = f"{BASE_URL}/recipes/category/{category_id}/{page - 1}/"
+            # Страницы 2+ отдаются через AJAX (обычные URL возвращают дубликаты).
+            path = f"/recipes/category/{category_id}/~{page}/?mode=load"
+            referer = f"{BASE_URL}/recipes/category/{category_id}/"
         return self.get(path, referer=referer)
 
     def get_catalog_page(self) -> str:
@@ -138,4 +171,5 @@ class PovarenokClient:
     def get_fresh_page(self, page: int = 1) -> str:
         if page <= 1:
             return self.get("/recipes/", referer=BASE_URL)
-        return self.get(f"/recipes/{page}/", referer=f"{BASE_URL}/recipes/{page - 1}/")
+        # Страницы 2+ отдаются через AJAX (обычные URL возвращают дубликаты).
+        return self.get(f"/recipes/~{page}/?mode=load", referer=f"{BASE_URL}/recipes/")

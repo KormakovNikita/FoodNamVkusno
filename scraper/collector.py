@@ -22,6 +22,71 @@ def collect_categories(client: PovarenokClient, output_path: Path) -> list[dict]
     return categories
 
 
+def _merge_page_ids(
+    all_ids: set[int],
+    page_ids: set[int],
+    page: int,
+    context: str,
+) -> bool:
+    """Добавляет ID со страницы. Возвращает False, если страница — полный дубликат."""
+    if not page_ids:
+        return False
+    new_ids = page_ids - all_ids
+    if not new_ids:
+        tqdm.write(f"[!] Страница {page} ({context}): дубликат ({len(page_ids)} ID уже известны)")
+        return False
+    all_ids.update(page_ids)
+    return True
+
+
+def collect_recipe_ids_by_scan(
+    client: PovarenokClient,
+    ids_path: Path,
+    progress_path: Path,
+    start_id: int = 1,
+    end_id: int = 185_000,
+    save_every: int = 100,
+) -> dict:
+    all_ids = set(load_json(ids_path, [])) if ids_path.exists() else set()
+    progress = load_json(progress_path, {})
+    resume_id = max(start_id, int(progress.get("last_scan_id", start_id - 1)) + 1)
+
+    found_this_run = 0
+    checked = 0
+
+    for recipe_id in tqdm(range(resume_id, end_id + 1), desc="Скан ID", initial=resume_id - start_id, total=end_id - start_id + 1):
+        try:
+            if client.check_recipe_exists(recipe_id):
+                all_ids.add(recipe_id)
+                found_this_run += 1
+            checked += 1
+            if checked % save_every == 0 or recipe_id == end_id:
+                save_json(ids_path, sorted(all_ids))
+                save_json(
+                    progress_path,
+                    {
+                        "last_scan_id": recipe_id,
+                        "end_id": end_id,
+                        "mode": "scan",
+                        "found_total": len(all_ids),
+                        "found_this_run": found_this_run,
+                    },
+                )
+        except Exception as error:
+            save_json(ids_path, sorted(all_ids))
+            save_json(progress_path, {"last_scan_id": recipe_id - 1, "end_id": end_id, "mode": "scan"})
+            raise RuntimeError(f"Ошибка на ID {recipe_id}: {error}") from error
+
+    save_json(progress_path, {"last_scan_id": end_id, "end_id": end_id, "mode": "scan", "done": True, "found_total": len(all_ids)})
+    return {
+        "recipe_count": len(all_ids),
+        "found_this_run": found_this_run,
+        "start_id": start_id,
+        "end_id": end_id,
+        "mode": "scan",
+    }
+
+
 def _collect_ids_for_category(
     client: PovarenokClient,
     category_id: int,
@@ -35,12 +100,19 @@ def _collect_ids_for_category(
         if max_pages is not None:
             max_page = min(max_page, max_pages)
 
+        duplicate_streak = 0
         for page in range(2, max_page + 1):
             html = client.get_category_page(category_id, page=page)
             page_ids = parse_recipe_ids_from_html(html)
             if not page_ids:
                 break
-            recipe_ids.update(page_ids)
+            if not _merge_page_ids(recipe_ids, page_ids, page, f"category/{category_id}"):
+                duplicate_streak += 1
+                if duplicate_streak >= 3:
+                    tqdm.write(f"[!] Категория {category_id}: 3 дубликата подряд, остановка")
+                    break
+                continue
+            duplicate_streak = 0
             previews.extend(parse_category_previews(html, category_id))
 
         return recipe_ids, previews, None
@@ -74,13 +146,20 @@ def collect_recipe_ids_from_fresh(
         save_json(previews_path, list(all_previews.values()))
 
     page_range = range(max(2, resume_page), total_pages + 1)
+    duplicate_streak = 0
     for page in tqdm(page_range, desc="Страницы рецептов", initial=resume_page - 1, total=total_pages):
         try:
             html = client.get_fresh_page(page)
             page_ids = parse_recipe_ids_from_html(html)
             if not page_ids:
                 break
-            all_ids.update(page_ids)
+            if not _merge_page_ids(all_ids, page_ids, page, "fresh"):
+                duplicate_streak += 1
+                if duplicate_streak >= 3:
+                    tqdm.write("[!] 3 страницы-дубликата подряд — проверьте AJAX-пагинацию")
+                    break
+                continue
+            duplicate_streak = 0
             for preview in parse_category_previews(html, 0):
                 all_previews[preview["id"]] = preview
             save_json(ids_path, sorted(all_ids))
@@ -147,6 +226,8 @@ def collect_recipe_ids(
     mode: str = "fresh",
     max_pages: int | None = None,
     max_pages_per_category: int | None = None,
+    start_id: int = 1,
+    end_id: int = 185_000,
 ) -> dict:
     if mode == "fresh":
         return collect_recipe_ids_from_fresh(
@@ -155,6 +236,14 @@ def collect_recipe_ids(
             previews_path,
             progress_path,
             max_pages=max_pages,
+        )
+    if mode == "scan":
+        return collect_recipe_ids_by_scan(
+            client,
+            ids_path,
+            progress_path,
+            start_id=start_id,
+            end_id=end_id,
         )
     if not categories_path.exists():
         collect_categories(client, categories_path)

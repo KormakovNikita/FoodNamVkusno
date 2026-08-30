@@ -24,17 +24,19 @@ def build_parser() -> argparse.ArgumentParser:
     ids_parser = subparsers.add_parser("ids", parents=[common], help="Собрать ID рецептов")
     ids_parser.add_argument(
         "--mode",
-        choices=["fresh", "categories"],
+        choices=["fresh", "categories", "scan"],
         default="fresh",
-        help="fresh = общий каталог (быстрее, рекомендуется), categories = по разделам",
+        help="fresh = общий каталог через AJAX (рекомендуется), categories = по разделам, scan = перебор ID",
     )
-    ids_parser.add_argument("--max-pages", type=int, default=None, help="Лимит страниц (для теста)")
+    ids_parser.add_argument("--max-pages", type=int, default=None, help="Лимит страниц (для теста, mode=fresh)")
     ids_parser.add_argument(
         "--max-pages-per-category",
         type=int,
         default=None,
         help="Лимит страниц на категорию (только mode=categories)",
     )
+    ids_parser.add_argument("--start-id", type=int, default=1, help="Начальный ID (mode=scan)")
+    ids_parser.add_argument("--end-id", type=int, default=185_000, help="Конечный ID (mode=scan)")
 
     subparsers.add_parser("categories", parents=[common], help="Собрать категории")
     subparsers.add_parser("retry", parents=[common], help="Повторить категории с ошибками")
@@ -101,6 +103,8 @@ def main() -> None:
                 mode=args.mode,
                 max_pages=args.max_pages,
                 max_pages_per_category=args.max_pages_per_category,
+                start_id=args.start_id,
+                end_id=args.end_id,
             )
         )
         return
@@ -140,7 +144,6 @@ def main() -> None:
                 failed_categories_path,
                 progress_path,
                 mode="fresh",
-                max_pages=args.limit,
             )
         )
         print(
