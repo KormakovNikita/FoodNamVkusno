@@ -18,8 +18,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--delay", type=float, default=1.5, help="Пауза между запросами (сек)")
-    common.add_argument("--timeout", type=float, default=90.0, help="Таймаут запроса (сек)")
+    common.add_argument("--timeout", type=float, default=45.0, help="Таймаут запроса (сек)")
     common.add_argument("--cooldown", type=float, default=120.0, help="Пауза после серии ошибок (сек)")
+    common.add_argument("--max-retries", type=int, default=4, help="Повторов при ошибке")
 
     ids_parser = subparsers.add_parser("ids", parents=[common], help="Собрать ID рецептов")
     ids_parser.add_argument(
@@ -59,7 +60,8 @@ def build_parser() -> argparse.ArgumentParser:
 def make_client(args: argparse.Namespace) -> PovarenokClient:
     client = PovarenokClient(
         delay=args.delay,
-        timeout=getattr(args, "timeout", 90.0),
+        timeout=getattr(args, "timeout", 45.0),
+        max_retries=getattr(args, "max_retries", 4),
         cooldown_seconds=args.cooldown,
     )
     print(f"Источник: povarenok.ru | HTTP: {client.backend}")

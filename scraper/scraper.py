@@ -17,6 +17,7 @@ from scraper.parser import (
 )
 
 _write_lock = threading.Lock()
+_worker_state = threading.local()
 
 
 def _clone_client(client: PovarenokClient) -> PovarenokClient:
@@ -29,6 +30,18 @@ def _clone_client(client: PovarenokClient) -> PovarenokClient:
     )
 
 
+def _init_worker_client(template: PovarenokClient) -> None:
+    _worker_state.client = _clone_client(template)
+
+
+def _get_worker_client(template: PovarenokClient) -> PovarenokClient:
+    client = getattr(_worker_state, "client", None)
+    if client is None:
+        client = _clone_client(template)
+        _worker_state.client = client
+    return client
+
+
 def _scrape_one(client: PovarenokClient, recipe_id: int) -> dict:
     url = f"https://www.povarenok.ru/recipes/show/{recipe_id}/"
     try:
@@ -39,6 +52,12 @@ def _scrape_one(client: PovarenokClient, recipe_id: int) -> dict:
         return {"id": recipe_id, "error": "empty recipe page", "url": url}
     except Exception as error:
         return {"id": recipe_id, "error": str(error), "url": url}
+
+
+def _handle_result(result: dict, output_path: Path, failed_path: Path) -> bool:
+    if "error" in result:
+        tqdm.write(f"[!] ID {result['id']}: {result['error'][:100]}")
+    return _store_result(result, output_path, failed_path)
 
 
 def _store_result(result: dict, output_path: Path, failed_path: Path) -> bool:
@@ -72,7 +91,7 @@ def scrape_recipes(
     if workers == 1:
         for recipe_id in tqdm(pending, desc="Рецепты"):
             result = _scrape_one(client, recipe_id)
-            if _store_result(result, output_path, failed_path):
+            if _handle_result(result, output_path, failed_path):
                 success_count += 1
             else:
                 error_count += 1
@@ -80,13 +99,17 @@ def scrape_recipes(
         print(f"Параллельно: {workers} потоков, пауза {client.delay} сек на поток")
 
         def worker_task(recipe_id: int) -> dict:
-            return _scrape_one(_clone_client(client), recipe_id)
+            return _scrape_one(_get_worker_client(client), recipe_id)
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            initializer=_init_worker_client,
+            initargs=(client,),
+        ) as executor:
             futures = {executor.submit(worker_task, recipe_id): recipe_id for recipe_id in pending}
             for future in tqdm(as_completed(futures), total=len(pending), desc="Рецепты"):
                 result = future.result()
-                if _store_result(result, output_path, failed_path):
+                if _handle_result(result, output_path, failed_path):
                     success_count += 1
                 else:
                     error_count += 1
@@ -142,9 +165,13 @@ def retry_failed_recipes(
         print(f"Параллельно: {workers} потоков")
 
         def worker_task(record: dict) -> dict:
-            return _scrape_one(_clone_client(client), record["id"])
+            return _scrape_one(_get_worker_client(client), record["id"])
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            initializer=_init_worker_client,
+            initargs=(client,),
+        ) as executor:
             futures = {executor.submit(worker_task, record): record for record in failed_records}
             for future in tqdm(as_completed(futures), total=len(failed_records), desc="Повтор рецептов"):
                 result = future.result()
