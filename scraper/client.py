@@ -53,21 +53,32 @@ class PovarenokClient:
     def warmup(self) -> None:
         if self._warmed_up:
             return
-        for _ in range(3):
+        for attempt in range(3):
             try:
-                self.get("/recipes/")
+                self.get("/recipes/", count_errors=False)
                 self._warmed_up = True
                 return
-            except Exception:
-                time.sleep(10)
+            except Exception as error:
+                print(f"[!] Прогрев не удался ({attempt + 1}/3): {error}")
+                time.sleep(15 * (attempt + 1))
+        print("[!] Прогрев не удался — сайт может временно ограничивать запросы. Подождите 30–60 мин.")
 
-    def _register_error(self) -> None:
+    def _reset_session(self) -> None:
+        if USE_CURL_CFFI:
+            self.session = http.Session(impersonate="chrome")
+        else:
+            self.session = http.Session()
+            self.session.headers.update({"User-Agent": USER_AGENT})
+        self._warmed_up = False
+
+    def _register_error(self, reason: str = "") -> None:
         self.consecutive_errors += 1
         if self.consecutive_errors >= self.cooldown_after:
-            print(f"\n[!] Много ошибок подряд. Пауза {int(self.cooldown_seconds)} сек...\n")
+            detail = f" ({reason})" if reason else ""
+            print(f"\n[!] Много ошибок подряд{detail}. Пауза {int(self.cooldown_seconds)} сек...\n")
             time.sleep(self.cooldown_seconds)
             self.consecutive_errors = 0
-            self._warmed_up = False
+            self._reset_session()
             self.warmup()
 
     def _register_success(self) -> None:
@@ -86,10 +97,11 @@ class PovarenokClient:
         message = str(error).lower()
         return "timed out" in message or "timeout" in message or "curl: (28)" in message
 
-    def get(self, path: str, params: Optional[dict] = None, referer: Optional[str] = None) -> str:
+    def get(self, path: str, params: Optional[dict] = None, referer: Optional[str] = None, *, count_errors: bool = True) -> str:
         url = path if path.startswith("http") else f"{BASE_URL}{path}"
         headers = {"Referer": referer or f"{BASE_URL}/recipes/"}
         last_error: Exception | None = None
+        last_status: int | None = None
 
         for attempt in range(self.max_retries):
             try:
@@ -101,7 +113,7 @@ class PovarenokClient:
                     timeout=self.timeout,
                 )
                 if response.status_code in (403, 429):
-                    self._register_error()
+                    last_status = response.status_code
                     time.sleep(min(90, 15 * (attempt + 1)))
                     continue
                 response.raise_for_status()
@@ -110,11 +122,18 @@ class PovarenokClient:
                 return response.text
             except Exception as error:
                 last_error = error
-                self._register_error()
                 wait = min(90, 10 * (attempt + 1))
                 if self._is_timeout_error(error):
                     wait = min(120, 20 * (attempt + 1))
                 time.sleep(wait)
+
+        if count_errors:
+            if last_status in (403, 429):
+                self._register_error(f"HTTP {last_status}")
+            elif last_error is not None:
+                self._register_error(type(last_error).__name__)
+            else:
+                self._register_error("unknown")
 
         if last_error is not None:
             raise last_error
@@ -136,7 +155,6 @@ class PovarenokClient:
                     self._register_success()
                     return False
                 if response.status_code in (403, 429):
-                    self._register_error()
                     time.sleep(min(90, 15 * (attempt + 1)))
                     continue
                 response.raise_for_status()
@@ -145,14 +163,15 @@ class PovarenokClient:
                 return "schema.org/Recipe" in response.text
             except Exception as error:
                 last_error = error
-                self._register_error()
                 wait = min(90, 10 * (attempt + 1))
                 if self._is_timeout_error(error):
                     wait = min(120, 20 * (attempt + 1))
                 time.sleep(wait)
 
         if last_error is not None:
+            self._register_error(type(last_error).__name__)
             raise last_error
+        self._register_error("HTTP error")
         raise RuntimeError(f"Failed to check recipe {recipe_id}")
 
     def get_category_page(self, category_id: int, page: int = 1) -> str:
