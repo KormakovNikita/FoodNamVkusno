@@ -97,6 +97,13 @@ class PovarenokClient:
         message = str(error).lower()
         return "timed out" in message or "timeout" in message or "curl: (28)" in message
 
+    @staticmethod
+    def _is_not_found_error(error: Exception) -> bool:
+        response = getattr(error, "response", None)
+        if response is not None and getattr(response, "status_code", None) == 404:
+            return True
+        return "404" in str(error)
+
     def get(self, path: str, params: Optional[dict] = None, referer: Optional[str] = None, *, count_errors: bool = True) -> str:
         url = path if path.startswith("http") else f"{BASE_URL}{path}"
         headers = {"Referer": referer or f"{BASE_URL}/recipes/"}
@@ -116,11 +123,16 @@ class PovarenokClient:
                     last_status = response.status_code
                     time.sleep(min(90, 15 * (attempt + 1)))
                     continue
+                if response.status_code == 404:
+                    self._register_success()
+                    response.raise_for_status()
                 response.raise_for_status()
                 response.encoding = ENCODING
                 self._register_success()
                 return response.text
             except Exception as error:
+                if self._is_not_found_error(error):
+                    raise
                 last_error = error
                 wait = min(90, 10 * (attempt + 1))
                 if self._is_timeout_error(error):
@@ -130,7 +142,7 @@ class PovarenokClient:
         if count_errors:
             if last_status in (403, 429):
                 self._register_error(f"HTTP {last_status}")
-            elif last_error is not None:
+            elif last_error is not None and not self._is_not_found_error(last_error):
                 self._register_error(type(last_error).__name__)
             else:
                 self._register_error("unknown")

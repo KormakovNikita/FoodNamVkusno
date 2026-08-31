@@ -56,7 +56,10 @@ def _scrape_one(client: PovarenokClient, recipe_id: int) -> dict:
 
 def _handle_result(result: dict, output_path: Path, failed_path: Path) -> bool:
     if "error" in result:
-        tqdm.write(f"[!] ID {result['id']}: {result['error'][:100]}")
+        error_text = result["error"]
+        if "404" in error_text:
+            return False
+        tqdm.write(f"[!] ID {result['id']}: {error_text[:100]}")
     return _store_result(result, output_path, failed_path)
 
 
@@ -80,7 +83,8 @@ def scrape_recipes(
 ) -> dict:
     recipe_ids = load_json(ids_path, [])
     scraped_ids = load_scraped_ids(output_path)
-    pending = [recipe_id for recipe_id in recipe_ids if recipe_id not in scraped_ids]
+    # Сначала новые рецепты (высокие ID) — они точно существуют и быстрее дают результат.
+    pending = [recipe_id for recipe_id in reversed(recipe_ids) if recipe_id not in scraped_ids]
     if limit is not None:
         pending = pending[:limit]
 
