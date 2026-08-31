@@ -43,9 +43,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     scrape_parser = subparsers.add_parser("scrape", parents=[common], help="Скачать рецепты")
     scrape_parser.add_argument("--limit", type=int, default=None)
+    scrape_parser.add_argument("--workers", type=int, default=1, help="Параллельных потоков (2–4 ускоряет в разы)")
 
     retry_recipes = subparsers.add_parser("retry-recipes", parents=[common], help="Повторить рецепты с ошибками")
     retry_recipes.add_argument("--limit", type=int, default=None)
+    retry_recipes.add_argument("--workers", type=int, default=1, help="Параллельных потоков")
 
     all_parser = subparsers.add_parser("all", parents=[common], help="Полный цикл")
     all_parser.add_argument("--limit", type=int, default=None)
@@ -124,12 +126,22 @@ def main() -> None:
                 failed_recipes_path,
                 progress_path,
                 limit=args.limit,
+                workers=getattr(args, "workers", 1),
             )
         )
         return
 
     if args.command == "retry-recipes":
-        print(retry_failed_recipes(client, failed_recipes_path, recipes_path, progress_path, limit=args.limit))
+        print(
+            retry_failed_recipes(
+                client,
+                failed_recipes_path,
+                recipes_path,
+                progress_path,
+                limit=args.limit,
+                workers=getattr(args, "workers", 1),
+            )
+        )
         return
 
     if args.command == "all":

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from tqdm import tqdm
@@ -13,6 +15,18 @@ from scraper.parser import (
     parse_recipe,
     save_json,
 )
+
+_write_lock = threading.Lock()
+
+
+def _clone_client(client: PovarenokClient) -> PovarenokClient:
+    return PovarenokClient(
+        delay=client.delay,
+        timeout=client.timeout,
+        max_retries=client.max_retries,
+        cooldown_after=client.cooldown_after,
+        cooldown_seconds=client.cooldown_seconds,
+    )
 
 
 def _scrape_one(client: PovarenokClient, recipe_id: int) -> dict:
@@ -27,6 +41,15 @@ def _scrape_one(client: PovarenokClient, recipe_id: int) -> dict:
         return {"id": recipe_id, "error": str(error), "url": url}
 
 
+def _store_result(result: dict, output_path: Path, failed_path: Path) -> bool:
+    with _write_lock:
+        if "error" in result:
+            append_jsonl(failed_path, result)
+            return False
+        append_jsonl(output_path, result)
+        return True
+
+
 def scrape_recipes(
     client: PovarenokClient,
     ids_path: Path,
@@ -34,6 +57,7 @@ def scrape_recipes(
     failed_path: Path,
     progress_path: Path,
     limit: int | None = None,
+    workers: int = 1,
 ) -> dict:
     recipe_ids = load_json(ids_path, [])
     scraped_ids = load_scraped_ids(output_path)
@@ -43,15 +67,29 @@ def scrape_recipes(
 
     success_count = 0
     error_count = 0
+    workers = max(1, workers)
 
-    for recipe_id in tqdm(pending, desc="Рецепты"):
-        result = _scrape_one(client, recipe_id)
-        if "error" in result:
-            append_jsonl(failed_path, result)
-            error_count += 1
-            continue
-        append_jsonl(output_path, result)
-        success_count += 1
+    if workers == 1:
+        for recipe_id in tqdm(pending, desc="Рецепты"):
+            result = _scrape_one(client, recipe_id)
+            if _store_result(result, output_path, failed_path):
+                success_count += 1
+            else:
+                error_count += 1
+    else:
+        print(f"Параллельно: {workers} потоков, пауза {client.delay} сек на поток")
+
+        def worker_task(recipe_id: int) -> dict:
+            return _scrape_one(_clone_client(client), recipe_id)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(worker_task, recipe_id): recipe_id for recipe_id in pending}
+            for future in tqdm(as_completed(futures), total=len(pending), desc="Рецепты"):
+                result = future.result()
+                if _store_result(result, output_path, failed_path):
+                    success_count += 1
+                else:
+                    error_count += 1
 
     progress = {
         "source": "povarenok.ru",
@@ -61,6 +99,7 @@ def scrape_recipes(
         "last_success_count": success_count,
         "last_error_count": error_count,
         "backend": client.backend,
+        "workers": workers,
     }
     save_json(progress_path, progress)
     return progress
@@ -72,6 +111,7 @@ def retry_failed_recipes(
     output_path: Path,
     progress_path: Path,
     limit: int | None = None,
+    workers: int = 1,
 ) -> dict:
     if not failed_path.exists():
         return {"retried": 0, "still_failed": 0, "success_count": 0}
@@ -88,14 +128,33 @@ def retry_failed_recipes(
 
     still_failed: list[dict] = []
     success_count = 0
+    workers = max(1, workers)
 
-    for record in tqdm(failed_records, desc="Повтор рецептов"):
-        result = _scrape_one(client, record["id"])
-        if "error" in result:
-            still_failed.append(result)
-            continue
-        append_jsonl(output_path, result)
-        success_count += 1
+    if workers == 1:
+        for record in tqdm(failed_records, desc="Повтор рецептов"):
+            result = _scrape_one(client, record["id"])
+            if "error" in result:
+                still_failed.append(result)
+                continue
+            append_jsonl(output_path, result)
+            success_count += 1
+    else:
+        print(f"Параллельно: {workers} потоков")
+
+        def worker_task(record: dict) -> dict:
+            return _scrape_one(_clone_client(client), record["id"])
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(worker_task, record): record for record in failed_records}
+            for future in tqdm(as_completed(futures), total=len(failed_records), desc="Повтор рецептов"):
+                result = future.result()
+                if "error" in result:
+                    with _write_lock:
+                        still_failed.append(result)
+                else:
+                    with _write_lock:
+                        append_jsonl(output_path, result)
+                    success_count += 1
 
     with failed_path.open("w", encoding="utf-8") as file:
         for record in still_failed:
@@ -108,6 +167,7 @@ def retry_failed_recipes(
             "failed": len(still_failed),
             "last_success_count": success_count,
             "backend": client.backend,
+            "workers": workers,
         },
     )
     return {
