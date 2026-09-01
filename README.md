@@ -108,6 +108,57 @@ python scripts/migrate_errors.py
 python scripts/export_json.py
 ```
 
+## Уникализация для SEO
+
+После скачивания рецептов можно сделать текст уникальным и изменить фото.
+
+### Установка
+
+```bash
+pip install -r requirements.txt
+```
+
+### Тест (10 рецептов, только текст)
+
+```bash
+python scripts/uniquify_recipes.py --limit 10 --text-only --site-name "FoodNamVkusno"
+```
+
+### Полный цикл (текст + главное фото)
+
+Рекомендуется `--main-image-only` — иначе 157k рецептов займут сотни ГБ.
+
+```bash
+python scripts/uniquify_recipes.py --site-name "FoodNamVkusno" --main-image-only
+```
+
+### Только фото (если текст уже готов)
+
+```bash
+python scripts/uniquify_recipes.py --images-only --main-image-only --input data/recipes_unique.jsonl --output data/recipes_unique.jsonl
+```
+
+### LLM-режим (лучшее качество SEO, нужен API)
+
+```bash
+set OPENAI_API_KEY=sk-...
+python scripts/uniquify_recipes.py --text-mode llm --limit 100 --text-only
+```
+
+Поддерживаются OpenAI-compatible API (`OPENAI_BASE_URL`, `UNIQUIFY_MODEL`).
+
+### Результат
+
+| Файл | Описание |
+|------|----------|
+| `data/recipes_unique.jsonl` | Уникальные рецепты |
+| `data/images/{id}/` | Обработанные фото |
+| `data/uniquify_progress.json` | Прогресс |
+
+К каждому рецепту добавляются: `slug`, `meta_title`, `meta_description`, `keywords`.
+
+Фото изменяются: обрезка, яркость/конtrast, лёгкий поворот, пересохранение JPEG — визуально другие файлы.
+
 ## Результаты
 
 | Файл | Описание |
