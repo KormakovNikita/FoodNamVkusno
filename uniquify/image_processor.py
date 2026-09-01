@@ -33,6 +33,8 @@ class ImageProcessor:
         quality_range: tuple[int, int] = (84, 91),
         fast_mode: bool = False,
         timeout: float = 20.0,
+        strip_watermark: bool = True,
+        media_url_prefix: str = "media/recipes",
     ) -> None:
         if Image is None:
             raise RuntimeError("Установите Pillow: pip install Pillow")
@@ -40,9 +42,24 @@ class ImageProcessor:
         self.quality_range = quality_range
         self.fast_mode = fast_mode
         self.timeout = timeout
+        self.strip_watermark = strip_watermark
+        self.media_url_prefix = media_url_prefix.rstrip("/")
         self.session = http.Session(impersonate="chrome") if USE_CURL else http.Session()
         if not USE_CURL:
             self.session.headers.update({"User-Agent": USER_AGENT})
+
+    @staticmethod
+    def is_remote_url(url: str) -> bool:
+        return bool(url) and url.startswith(("http://", "https://", "//"))
+
+    def _strip_watermark(self, image: Image.Image) -> Image.Image:
+        """Убирает логотип povarenok.ru в правом нижнем углу."""
+        width, height = image.size
+        # Логотип: ~18% ширины справа, ~14% высоты снизу
+        crop_right = int(width * 0.18)
+        crop_bottom = int(height * 0.14)
+        cropped = image.crop((0, 0, width - crop_right, height - crop_bottom))
+        return cropped.resize((width, height), Image.Resampling.LANCZOS)
 
     def _seed(self, recipe_id: int, url: str, kind: str) -> random.Random:
         key = f"{recipe_id}:{kind}:{url}"
@@ -71,6 +88,9 @@ class ImageProcessor:
         image = Image.open(io.BytesIO(image_bytes))
         if image.mode not in ("RGB", "L"):
             image = image.convert("RGB")
+
+        if self.strip_watermark:
+            image = self._strip_watermark(image)
 
         width, height = image.size
         resample = Image.Resampling.BILINEAR if self.fast_mode else Image.Resampling.LANCZOS
@@ -110,20 +130,29 @@ class ImageProcessor:
         image.save(output, **save_kwargs)
         return output.getvalue()
 
-    def _local_path(self, recipe_id: int, kind: str, url: str) -> Path:
-        parsed = urlparse(url)
-        suffix = Path(parsed.path).suffix.lower()
-        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-            suffix = ".jpg"
-        filename = f"{kind}_{hashlib.md5(url.encode()).hexdigest()[:10]}.jpg"
+    def _local_path(self, recipe_id: int, kind: str) -> Path:
+        filename = "main.jpg" if kind == "main" else f"{kind}.jpg"
         return self.output_dir / str(recipe_id) / filename
+
+    def _public_url(self, recipe_id: int, kind: str) -> str:
+        filename = "main.jpg" if kind == "main" else f"{kind}.jpg"
+        return f"/{self.media_url_prefix}/{recipe_id}/{filename}"
 
     def process_url(self, recipe_id: int, url: str, kind: str, force: bool = False) -> Optional[str]:
         if not url:
             return None
-        local_path = self._local_path(recipe_id, kind, url)
+        if not self.is_remote_url(url):
+            local_path = Path(url.lstrip("/"))
+            if local_path.exists():
+                return url
+            disk_path = self._local_path(recipe_id, kind)
+            if disk_path.exists():
+                return self._public_url(recipe_id, kind)
+            return None
+
+        local_path = self._local_path(recipe_id, kind)
         if local_path.exists() and not force:
-            return str(local_path.as_posix())
+            return self._public_url(recipe_id, kind)
 
         raw = self.download(url)
         if not raw:
@@ -132,17 +161,20 @@ class ImageProcessor:
         transformed = self.transform(raw, recipe_id, url, kind)
         local_path.parent.mkdir(parents=True, exist_ok=True)
         local_path.write_bytes(transformed)
-        return str(local_path.as_posix())
+        return self._public_url(recipe_id, kind)
 
     def process_recipe_images(self, recipe: dict, force: bool = False, main_only: bool = False) -> dict:
         recipe_id = recipe["id"]
         updated = dict(recipe)
 
         if recipe.get("image_url"):
-            local = self.process_url(recipe_id, recipe["image_url"], "main", force=force)
-            if local:
-                updated["image_url_original"] = recipe["image_url"]
-                updated["image_url"] = local
+            source_url = recipe.get("image_url_original") or recipe["image_url"]
+            if self.is_remote_url(recipe["image_url"]) or force:
+                local = self.process_url(recipe_id, source_url if self.is_remote_url(source_url) else recipe["image_url"], "main", force=force)
+                if local:
+                    if self.is_remote_url(recipe["image_url"]):
+                        updated["image_url_original"] = recipe["image_url"]
+                    updated["image_url"] = local
 
         if main_only:
             return updated
@@ -151,10 +183,18 @@ class ImageProcessor:
         for step in recipe.get("steps", []):
             step_copy = dict(step)
             if step.get("image_url"):
-                local = self.process_url(recipe_id, step["image_url"], f"step_{step.get('number', 0)}", force=force)
-                if local:
-                    step_copy["image_url_original"] = step["image_url"]
-                    step_copy["image_url"] = local
+                source_url = step.get("image_url_original") or step["image_url"]
+                if self.is_remote_url(step["image_url"]) or force:
+                    local = self.process_url(
+                        recipe_id,
+                        source_url if self.is_remote_url(source_url) else step["image_url"],
+                        f"step_{step.get('number', 0)}",
+                        force=force,
+                    )
+                    if local:
+                        if self.is_remote_url(step["image_url"]):
+                            step_copy["image_url_original"] = step["image_url"]
+                        step_copy["image_url"] = local
             steps.append(step_copy)
         updated["steps"] = steps
         return updated
