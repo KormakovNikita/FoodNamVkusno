@@ -31,6 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--images-only", action="store_true", help="Только фото, без переписывания текста")
     parser.add_argument("--force-images", action="store_true", help="Перегенерировать уже сохранённые фото")
     parser.add_argument("--main-image-only", action="store_true", help="Обрабатывать только главное фото (экономит место)")
+    parser.add_argument("--workers", type=int, default=8, help="Параллельных потоков (8–16 для максимальной скорости)")
+    parser.add_argument("--fast-images", action="store_true", help="Быстрая обработка фото (меньше эффектов, ~2x быстрее)")
+    parser.add_argument("--image-timeout", type=float, default=20.0, help="Таймаут скачивания фото (сек)")
+    parser.add_argument("--save-every", type=int, default=25, help="Сохранять прогресс каждые N рецептов")
     parser.add_argument("--limit", type=int, default=None, help="Лимит рецептов для теста")
     return parser
 
@@ -54,6 +58,10 @@ def main() -> None:
         rewrite_images=rewrite_images,
         force_images=args.force_images,
         main_image_only=args.main_image_only,
+        fast_images=args.fast_images,
+        image_timeout=args.image_timeout,
+        workers=args.workers,
+        save_every=args.save_every,
     )
     print(
         pipeline.run(limit=args.limit),

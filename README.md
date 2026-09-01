@@ -124,12 +124,30 @@ pip install -r requirements.txt
 python scripts/uniquify_recipes.py --limit 10 --text-only --site-name "FoodNamVkusno"
 ```
 
-### Полный цикл (текст + главное фото)
+### Полный цикл (максимальная скорость)
+
+```bash
+python scripts/uniquify_recipes.py --site-name "FoodNamVkusno" --main-image-only --workers 12 --fast-images
+```
+
+Только текст (самый быстрый вариант, ~30–60 мин на 157k):
+
+```bash
+python scripts/uniquify_recipes.py --text-only --site-name "FoodNamVkusno" --workers 16
+```
+
+| Настройки | Скорость |
+|-----------|----------|
+| `--text-only --workers 16` | ~30–60 мин |
+| `--main-image-only --workers 8` | ~6–12 часов |
+| `--main-image-only --workers 12 --fast-images` | ~3–6 часов |
+
+### Полный цикл (обычный режим)
 
 Рекомендуется `--main-image-only` — иначе 157k рецептов займут сотни ГБ.
 
 ```bash
-python scripts/uniquify_recipes.py --site-name "FoodNamVkusno" --main-image-only
+python scripts/uniquify_recipes.py --site-name "FoodNamVkusno" --main-image-only --workers 8
 ```
 
 ### Только фото (если текст уже готов)
