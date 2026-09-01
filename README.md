@@ -177,6 +177,45 @@ python scripts/uniquify_recipes.py --text-mode llm --limit 100 --text-only
 
 Фото изменяются: обрезка, яркость/конtrast, лёгкий поворот, пересохранение JPEG — визуально другие файлы.
 
+### Если фото всё ещё с povarenok.ru
+
+Скорее всего запускали `--text-only`. Исправление через **AI** (убирает логотип, не обрезает):
+
+```bash
+pip install opencv-python-headless
+pip install torch simple-lama-inpainting
+python scripts/fix_recipe_images.py --ai-backend lama --workers 1 --main-image-only --force
+```
+
+Без GPU (быстрее, но хуже качество):
+
+```bash
+pip install opencv-python-headless
+python scripts/fix_recipe_images.py --ai-backend opencv --workers 8 --main-image-only --force
+```
+
+Облачный AI (Replicate, платно ~$0.002/фото):
+
+```bash
+set REPLICATE_API_TOKEN=r8_ваш_токен
+python scripts/fix_recipe_images.py --ai-backend replicate --workers 2 --limit 100
+```
+
+Тест на 10 рецептах:
+
+```bash
+python scripts/fix_recipe_images.py --ai-backend lama --limit 10 --force
+```
+
+Скачает фото локально, уберёт водяной знак AI, URL станет `/media/recipes/{id}/main.jpg`.
+
+### HTML-превью рецепта
+
+```bash
+python scripts/preview_recipe.py --id 184424
+start data\preview_recipe.html
+```
+
 ## Результаты
 
 | Файл | Описание |

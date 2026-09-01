@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Перекачать и обработать фото для уже уникализированных рецептов."""
+"""Перекачать и обработать фото: AI-удаление водяного знака povarenok."""
 from __future__ import annotations
 
 import argparse
@@ -43,11 +43,12 @@ def needs_image_fix(recipe: dict) -> bool:
     return False
 
 
-def _init_worker(images_dir: Path, fast_images: bool) -> None:
+def _init_worker(images_dir: Path, fast_images: bool, watermark_backend: str) -> None:
     _worker_state.processor = ImageProcessor(
         images_dir,
         fast_mode=fast_images,
         strip_watermark=True,
+        watermark_backend=watermark_backend,
     )
 
 
@@ -57,16 +58,25 @@ def _process_one(recipe: dict, main_only: bool) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Скачать фото локально и убрать водяной знак povarenok")
+    parser = argparse.ArgumentParser(description="AI-обработка фото: убрать водяной знак povarenok")
     parser.add_argument("--input", type=Path, default=Path("data/recipes_unique.jsonl"))
     parser.add_argument("--output", type=Path, default=None, help="По умолчанию перезаписывает input")
     parser.add_argument("--images-dir", type=Path, default=Path("data/images"))
-    parser.add_argument("--workers", type=int, default=12)
+    parser.add_argument("--workers", type=int, default=None, help="Для AI (lama) лучше 1–2, для opencv — 8–12")
     parser.add_argument("--fast-images", action="store_true")
     parser.add_argument("--main-image-only", action="store_true", help="Только главное фото")
     parser.add_argument("--force", action="store_true", help="Перегенерировать даже локальные фото")
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--ai-backend",
+        choices=["ai", "lama", "opencv", "replicate", "crop"],
+        default="ai",
+        help="ai = LaMa локально (или opencv fallback), replicate = облако Replicate",
+    )
     args = parser.parse_args()
+
+    if args.workers is None:
+        args.workers = 1 if args.ai_backend in {"ai", "lama", "replicate"} else 8
 
     if not args.input.exists():
         raise SystemExit(f"Файл не найден: {args.input}")
@@ -78,10 +88,17 @@ def main() -> None:
 
     fix_ids = {r["id"] for r in recipes if args.force or needs_image_fix(r)}
     print(f"Всего рецептов: {len(recipes)}, обработать фото: {len(fix_ids)}")
+    print(f"AI backend: {args.ai_backend}, workers: {args.workers}")
 
     if not fix_ids:
-        print("Все фото уже локальные.")
-        return
+        print("Все фото уже локальные. Используйте --force для перегенерации.")
+        if not args.force:
+            return
+
+    if args.force:
+        fix_ids = {r["id"] for r in recipes}
+        if args.limit:
+            fix_ids = {r["id"] for r in recipes[: args.limit]}
 
     updated_by_id: dict[int, dict] = {}
     errors = 0
@@ -90,10 +107,10 @@ def main() -> None:
     with ThreadPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
-        initargs=(args.images_dir, args.fast_images),
+        initargs=(args.images_dir, args.fast_images, args.ai_backend),
     ) as executor:
         futures = {executor.submit(_process_one, recipe, args.main_image_only): recipe["id"] for recipe in pending}
-        for future in tqdm(as_completed(futures), total=len(pending), desc="Фото"):
+        for future in tqdm(as_completed(futures), total=len(pending), desc="AI фото"):
             recipe_id = futures[future]
             try:
                 updated_by_id[recipe_id] = future.result()
@@ -116,6 +133,7 @@ def main() -> None:
             "errors": errors,
             "output": str(output_path),
             "images_dir": str(args.images_dir),
+            "ai_backend": args.ai_backend,
         }
     )
 

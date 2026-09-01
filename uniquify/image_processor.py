@@ -5,7 +5,6 @@ import io
 import random
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlparse
 
 try:
     from PIL import Image, ImageEnhance, ImageFilter, ImageOps
@@ -34,6 +33,7 @@ class ImageProcessor:
         fast_mode: bool = False,
         timeout: float = 20.0,
         strip_watermark: bool = True,
+        watermark_backend: str = "crop",
         media_url_prefix: str = "media/recipes",
     ) -> None:
         if Image is None:
@@ -43,7 +43,13 @@ class ImageProcessor:
         self.fast_mode = fast_mode
         self.timeout = timeout
         self.strip_watermark = strip_watermark
+        self.watermark_backend = watermark_backend
         self.media_url_prefix = media_url_prefix.rstrip("/")
+        self._watermark_remover = None
+        if strip_watermark and watermark_backend != "crop":
+            from uniquify.ai_watermark import create_watermark_remover
+
+            self._watermark_remover = create_watermark_remover(watermark_backend)
         self.session = http.Session(impersonate="chrome") if USE_CURL else http.Session()
         if not USE_CURL:
             self.session.headers.update({"User-Agent": USER_AGENT})
@@ -55,9 +61,9 @@ class ImageProcessor:
     def _strip_watermark(self, image: Image.Image) -> Image.Image:
         """Убирает логотип povarenok.ru в правом нижнем углу."""
         width, height = image.size
-        # Логотип: ~18% ширины справа, ~14% высоты снизу
-        crop_right = int(width * 0.18)
-        crop_bottom = int(height * 0.14)
+        # Логотип: ~20% ширины справа, ~16% высоты снизу
+        crop_right = int(width * 0.20)
+        crop_bottom = int(height * 0.16)
         cropped = image.crop((0, 0, width - crop_right, height - crop_bottom))
         return cropped.resize((width, height), Image.Resampling.LANCZOS)
 
@@ -90,7 +96,10 @@ class ImageProcessor:
             image = image.convert("RGB")
 
         if self.strip_watermark:
-            image = self._strip_watermark(image)
+            if self._watermark_remover is not None:
+                image = self._watermark_remover.remove(image)
+            else:
+                image = self._strip_watermark(image)
 
         width, height = image.size
         resample = Image.Resampling.BILINEAR if self.fast_mode else Image.Resampling.LANCZOS

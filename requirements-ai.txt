@@ -1,0 +1,8 @@
+# AI-удаление водяного знака (опционально)
+opencv-python-headless>=4.8.0
+
+# Локальная нейросеть LaMa (рекомендуется с NVIDIA GPU):
+# pip install torch simple-lama-inpainting
+
+# Облачный AI через Replicate (~$0.002/фото):
+# set REPLICATE_API_TOKEN=r8_...
